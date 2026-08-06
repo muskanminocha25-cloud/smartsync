@@ -138,15 +138,15 @@ export default function BlueprintPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
-                  <button onClick={e => { e.stopPropagation(); toggleDay(day.id); }}
+                  <div onClick={e => { e.stopPropagation(); toggleDay(day.id); }}
                     className={cn("w-7 h-7 rounded-lg border-2 flex items-center justify-center transition-all",
                       day.is_completed ? "bg-emerald-500 border-emerald-500" : "border-slate-600 hover:border-emerald-500")}>
                     {day.is_completed && <CheckCircle size={14} className="text-white" />}
-                  </button>
-                  <ChevronDown size={15} className={cn("text-slate-500 transition-transform", isExpanded && "rotate-180")} />
+                  </div>
+                    <ChevronDown size={15} className={cn("text-slate-500 transition-transform", isExpanded && "rotate-180")} />
                 </div>
               </button>
-
+            
               {isExpanded && (
                 <div className="px-4 sm:px-5 pb-5 pt-1 border-t border-indigo-500/10 space-y-5">
                   {/* Tasks */}
