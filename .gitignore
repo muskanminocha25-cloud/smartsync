@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Environment variables — NEVER commit these
+backend/.env
+frontend/.env.local
+*.env
+
+# Uploaded files (large, not needed in git)
+backend/uploads/
+
+# Node
+node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/settings.json
+
+# Alembic (keep structure, ignore generated files)
+backend/alembic/versions/*.py
