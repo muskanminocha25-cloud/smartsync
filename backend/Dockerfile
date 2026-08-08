@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --only-binary=pydantic-core -r requirements.txt
 
 # Copy the rest of the code
 COPY . .
