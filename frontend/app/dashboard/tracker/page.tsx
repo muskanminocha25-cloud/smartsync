@@ -57,7 +57,7 @@ export default function TrackerPage() {
   const filtered = tasks.filter(t => {
     if (filter === "pending") return !t.completed;
     if (filter === "done") return t.completed;
-    if (filter === "custom") return t.is_custom;
+    if (filter === "custom") return t.custom;
     return true;
   });
   const done = tasks.filter(t => t.completed).length;
@@ -168,7 +168,7 @@ export default function TrackerPage() {
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         <span className={cn("text-xs px-2 py-0.5 rounded-full border", pm.color)}>{pm.label}</span>
                         {task.due_date && <span className="text-xs text-slate-600">{new Date(task.due_date).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}</span>}
-                        {task.is_custom && <span className="text-xs text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full">Custom</span>}
+                        {task.custom && <span className="text-xs text-violet-400 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full">Custom</span>}
                       </div>
                     </>
                   )}
