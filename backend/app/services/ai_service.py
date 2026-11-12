@@ -1,9 +1,9 @@
 """
 AI Service — the brain of SmartSync.
-Uses LangChain + Groq (FREE) for all AI operations.
-Model: llama-3.1-70b-versatile (Meta's open-source Llama 3.1)
+Uses LangChain + Groq for all AI operations.
+The model name comes from the GROQ_MODEL setting in Render.
 """
-
+import asyncio
 import json
 import re
 from datetime import date, timedelta
@@ -14,9 +14,11 @@ from langchain_core.output_parsers import StrOutputParser
 
 from ..config import settings
 
+CHUNK_SIZE = 10  # days generated per AI call
+
 
 def _get_llm(temperature: float = 0.3, max_tokens: int = 4096) -> ChatGroq:
-    """Creates a ChatGroq instance — same interface as ChatOpenAI, 100% free."""
+    """Creates a ChatGroq instance using the model set in the environment."""
     return ChatGroq(
         model=settings.groq_model,
         temperature=temperature,
@@ -26,22 +28,30 @@ def _get_llm(temperature: float = 0.3, max_tokens: int = 4096) -> ChatGroq:
 
 
 def _clean_json_string(raw: str) -> str:
-    """
-    Removes markdown code fences if the AI wraps its JSON in them.
-    Example: ```json {...} ``` → {...}
-    """
+    """Removes markdown code fences if the AI wraps its JSON in them."""
     raw = raw.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
     return raw.strip()
 
 
+def _extract_json(raw: str) -> dict:
+    """Pull the JSON object out of the AI reply, even if it adds extra text."""
+    raw = _clean_json_string(raw)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON found in AI response")
+    return json.loads(raw[start:end + 1])
+
+
+# ───────────────────────── RESUME ANALYSIS ─────────────────────────
 async def analyze_resume(resume_text: str, target_position: str) -> dict:
     """
-    Sends the resume text to Groq and gets back a structured analysis.
+    Sends the resume text to the AI and gets back a structured analysis.
     Returns: match_score, strengths, missing_skills, suggestions, raw_summary
     """
-    llm = _get_llm(temperature=0.2, max_tokens=2000)
+    llm = _get_llm(temperature=0.2, max_tokens=4000)
 
     prompt = ChatPromptTemplate.from_messages([
         (
@@ -81,21 +91,25 @@ Provide at least 2 strengths and 3 missing skills. Keep everything direct and st
     ])
 
     chain = prompt | llm | StrOutputParser()
-
     safe_text = resume_text[:6000]
 
-    raw_result = await chain.ainvoke({
-        "target_position": target_position,
-        "resume_text": safe_text,
-    })
+    last_error = None
+    for attempt in range(3):
+        try:
+            raw_result = await chain.ainvoke({
+                "target_position": target_position,
+                "resume_text": safe_text,
+            })
+            analysis = _extract_json(raw_result)
+            analysis["match_score"] = max(0, min(100, int(analysis.get("match_score", 50))))
+            return analysis
+        except Exception as e:
+            last_error = e
+            await asyncio.sleep(2)
+    raise last_error
 
-    cleaned = _clean_json_string(raw_result)
-    analysis = json.loads(cleaned)
-    analysis["match_score"] = max(0, min(100, int(analysis.get("match_score", 50))))
 
-    return analysis
-
-
+# ───────────────────────── BLUEPRINT ─────────────────────────
 async def generate_blueprint(
     target_position: str,
     timeline_days: int,
@@ -104,30 +118,23 @@ async def generate_blueprint(
 ) -> list[dict]:
     """
     Generates a day-by-day preparation blueprint.
-    Splits into two calls for 60/90-day plans to stay within token limits.
+    Builds the plan in small chunks (CHUNK_SIZE days per AI call)
+    so the AI reply never gets cut off.
     """
     missing_skills_text = ", ".join(
         [s.get("skill", "") for s in analysis.get("missing_skills", [])]
     ) or "General skills for the role"
-
     strengths_text = ", ".join(analysis.get("strengths", [])) or "Not assessed"
 
-    if timeline_days <= 30:
-        return await _generate_days_chunk(
+    all_days = []
+    for start_day in range(1, timeline_days + 1, CHUNK_SIZE):
+        end_day = min(start_day + CHUNK_SIZE - 1, timeline_days)
+        days = await _generate_days_chunk(
             target_position, missing_skills_text, strengths_text,
-            1, timeline_days, start_date
+            start_day, end_day, start_date, timeline_days,
         )
-    else:
-        half = timeline_days // 2
-        first_half = await _generate_days_chunk(
-            target_position, missing_skills_text, strengths_text,
-            1, half, start_date
-        )
-        second_half = await _generate_days_chunk(
-            target_position, missing_skills_text, strengths_text,
-            half + 1, timeline_days, start_date
-        )
-        return first_half + second_half
+        all_days.extend(days)
+    return all_days
 
 
 async def _generate_days_chunk(
@@ -137,85 +144,75 @@ async def _generate_days_chunk(
     start_day: int,
     end_day: int,
     plan_start_date: date,
+    total_days: int,
 ) -> list[dict]:
-    """Generates a chunk of days and returns them as a list of dicts."""
+    """Generates one small chunk of days. Retries up to 3 times if the reply is broken."""
     llm = _get_llm(temperature=0.4, max_tokens=8000)
     days_count = end_day - start_day + 1
 
     prompt = ChatPromptTemplate.from_messages([
         (
             "system",
-            """You are a campus placement coach creating a precise day-by-day study plan.
-Be specific, realistic, and progressive. Return ONLY valid JSON.""",
+            "You are a campus placement coach. Return ONLY valid JSON, no extra text.",
         ),
         (
             "human",
-            """Create a {days_count}-day preparation plan (Day {start_day} to Day {end_day})
-for a student targeting: {target_position}
+            """Create Day {start_day} to Day {end_day} (exactly {days_count} days) of a
+{total_days}-day preparation plan for a student targeting: {target_position}
 
 Missing skills: {missing_skills}
 Existing strengths: {strengths}
 
-RULES:
-- Start from basics, get harder over time
-- Mix study, practice, and revision
-- Each day: 2-4 tasks totaling 2-4 hours
-- Resources must be REAL sites (LeetCode, GeeksForGeeks, YouTube, official docs)
-- Be specific to {target_position}
+Rules:
+- Start easy and get harder as the day number grows (this is day {start_day} of {total_days})
+- 2-3 tasks per day, keep every description to ONE short sentence
+- 1 real resource per day (LeetCode, GeeksForGeeks, YouTube, official docs)
 
 Return ONLY this JSON:
-{{
-  "days": [
-    {{
-      "day_number": {start_day},
-      "theme": "<short theme e.g. 'Arrays & Two Pointers'>",
-      "tasks": [
-        {{
-          "description": "<specific task>",
-          "duration_minutes": <30 to 120>,
-          "type": "<study | practice | project | revision>"
-        }}
-      ],
-      "resources": [
-        {{
-          "title": "<resource name>",
-          "url": "<real URL or null>",
-          "type": "<video | article | practice | book>"
-        }}
-      ]
-    }},
-    ... all {days_count} days ...
-  ]
-}}
+{{"days": [{{"day_number": {start_day}, "theme": "short theme",
+"tasks": [{{"description": "one sentence", "duration_minutes": 60, "type": "study"}}],
+"resources": [{{"title": "name", "url": "https://...", "type": "article"}}]}}]}}
 
-Generate ALL {days_count} days from Day {start_day} to Day {end_day}.""",
+Type must be one of: study, practice, project, revision.""",
         ),
     ])
-
     chain = prompt | llm | StrOutputParser()
 
-    raw_result = await chain.ainvoke({
-        "target_position": target_position,
-        "missing_skills": missing_skills,
-        "strengths": strengths,
-        "days_count": days_count,
-        "start_day": start_day,
-        "end_day": end_day,
-    })
+    last_error = None
+    days = []
+    for attempt in range(3):
+        try:
+            raw = await chain.ainvoke({
+                "target_position": target_position,
+                "missing_skills": missing_skills,
+                "strengths": strengths,
+                "days_count": days_count,
+                "start_day": start_day,
+                "end_day": end_day,
+                "total_days": total_days,
+            })
+            days = _extract_json(raw).get("days", [])
+            if not days:
+                raise ValueError("AI returned no days")
+            break
+        except Exception as e:
+            last_error = e
+            await asyncio.sleep(2)
+    else:
+        raise last_error
 
-    cleaned = _clean_json_string(raw_result)
-    data = json.loads(cleaned)
-    days = data.get("days", [])
-
-    for day in days:
-        day_offset = day["day_number"] - 1
-        day["date"] = str(plan_start_date + timedelta(days=day_offset))
+    days = days[:days_count]
+    for i, day in enumerate(days):
+        day["day_number"] = start_day + i
+        day["date"] = str(plan_start_date + timedelta(days=start_day + i - 1))
         for task in day.get("tasks", []):
             task.setdefault("completed", False)
+        day.setdefault("resources", [])
 
     return days
 
 
+# ───────────────────────── CHAT ─────────────────────────
 async def chat_response(
     user_message: str,
     conversation_history: list[dict],
@@ -225,7 +222,7 @@ async def chat_response(
     Generates a contextual chat response.
     Uses the student's resume analysis as context for personalized answers.
     """
-    llm = _get_llm(temperature=0.5, max_tokens=1000)
+    llm = _get_llm(temperature=0.5, max_tokens=2000)
 
     missing_skills = ", ".join(context.get("missing_skills", [])) or "Not analyzed yet"
 
